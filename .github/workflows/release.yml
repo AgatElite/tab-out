@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package-extension:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build extension zip
+        run: |
+          mkdir -p dist
+          cd extension
+          zip -r ../dist/tab-out-extension.zip . -x "config.local.js"
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/tab-out-extension.zip
+          generate_release_notes: true

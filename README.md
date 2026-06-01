@@ -8,6 +8,33 @@ No server. No account. No external API calls. Just a Chrome extension.
 
 ---
 
+## Install From This Repo
+
+Clone the repo:
+
+```bash
+git clone https://github.com/AgatElite/tab-out.git
+cd tab-out
+```
+
+Then load the `extension/` folder in Chrome:
+
+1. Open `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked**
+4. Select the `extension/` folder
+
+To update later:
+
+```bash
+cd tab-out
+git pull
+```
+
+Then click **Reload** for Tab Out on `chrome://extensions`.
+
+Tagged releases also publish a `tab-out-extension.zip` asset on GitHub. Download it from the latest release, unzip it, and load the unzipped extension folder in Chrome.
+
 ## Install with a coding agent
 
 Send your coding agent (Claude Code, Codex, etc.) this repo and say **"install this"**:
@@ -28,6 +55,8 @@ The agent will walk you through it. Takes about 1 minute.
 - **Duplicate detection** flags when you have the same page open twice, with one-click cleanup
 - **Click any tab to jump to it** across windows, no new tab opened
 - **Save for later** bookmark tabs to a checklist before closing them
+- **Saved lists** name and rename lists, retitle links, drag between or within lists, open selected/list tabs, and optionally archive tabs when opened
+- **Theme switcher** choose light, dark, or follow your system setting
 - **Localhost grouping** shows port numbers next to each tab so you can tell your vibe coding projects apart
 - **Expandable groups** show the first 8 tabs with a clickable "+N more"
 - **100% local** your data never leaves your machine

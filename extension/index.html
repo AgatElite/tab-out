@@ -26,6 +26,13 @@
       <!-- "Friday, April 4, 2026" — written by getDateDisplay() in app.js -->
       <div class="date" id="dateDisplay"></div>
     </div>
+    <div class="header-actions">
+      <div class="theme-switch" role="group" aria-label="Theme">
+        <button class="theme-option" type="button" data-action="set-theme" data-theme-mode="light" aria-pressed="false">Light</button>
+        <button class="theme-option" type="button" data-action="set-theme" data-theme-mode="system" aria-pressed="true">System</button>
+        <button class="theme-option" type="button" data-action="set-theme" data-theme-mode="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
   </header>
 
   <!-- ================================================================
@@ -47,10 +54,7 @@
   </div>
 
   <!-- ================================================================
-       MAIN CONTENT AREA — two-column layout
-       Left: open tabs (domain/mission cards)
-       Right: saved for later checklist
-       The right column only renders when it has items (JS controls this)
+       MAIN CONTENT AREA — open tabs grid
        ================================================================ -->
   <div class="dashboard-columns" id="dashboardColumns">
 
@@ -63,55 +67,89 @@
       </div>
       <div class="missions" id="openTabsMissions"></div>
     </div>
-
-    <!-- RIGHT COLUMN: Saved for Later checklist -->
-    <div class="deferred-column" id="deferredColumn" style="display:none">
-      <div class="section-header">
-        <h2>Saved for later</h2>
-        <div class="section-line"></div>
-        <div class="section-count" id="deferredCount"></div>
-      </div>
-
-      <!-- Active checklist items — injected by renderDeferredList() in app.js -->
-      <div class="deferred-list" id="deferredList"></div>
-
-      <!-- Empty state — shown when no active deferred tabs -->
-      <div class="deferred-empty" id="deferredEmpty" style="display:none">
-        Nothing saved. Living in the moment.
-      </div>
-
-      <!-- Archive section — collapsed by default -->
-      <div class="deferred-archive" id="deferredArchive" style="display:none">
-        <button class="archive-toggle" id="archiveToggle">
-          <svg class="archive-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
-          Archive
-          <span class="archive-count" id="archiveCount"></span>
-        </button>
-        <div class="archive-body" id="archiveBody" style="display:none">
-          <input type="text" class="archive-search" id="archiveSearch" placeholder="Search archived tabs...">
-          <div class="archive-list" id="archiveList"></div>
-        </div>
-      </div>
-    </div>
-
   </div><!-- end .dashboard-columns -->
 
   <!-- ================================================================
-       FOOTER — global stats + refresh control
+       SAVED FOR LATER — expandable list board below the open tabs
        ================================================================ -->
-  <footer>
-    <div class="footer-stats">
-      <div class="stat">
-        <div class="stat-num" id="statTabs">—</div>
-        <div class="stat-label">Open tabs</div>
+  <div class="deferred-column" id="deferredColumn" style="display:none">
+    <div class="section-header">
+      <h2>Saved for later</h2>
+      <div class="section-line"></div>
+      <div class="section-count" id="deferredCount"></div>
+      <button class="deferred-add-list" type="button" data-action="create-deferred-list" title="Create list">+ List</button>
+    </div>
+
+    <!-- Active checklist items — injected by renderDeferredList() in app.js -->
+    <div class="deferred-list" id="deferredList"></div>
+
+    <div class="deferred-bulk-bar" id="deferredBulkBar" style="display:none">
+      <span id="deferredBulkCount">0 selected</span>
+      <button class="action-btn primary" type="button" data-action="bulk-open-deferred">Open</button>
+      <button class="action-btn" type="button" data-action="bulk-archive-deferred">Archive</button>
+      <button class="action-btn" type="button" data-action="open-bulk-move-deferred">Move</button>
+      <button class="action-btn danger" type="button" data-action="bulk-delete-deferred">Delete</button>
+      <button class="deferred-bulk-clear" type="button" data-action="clear-deferred-selection" title="Clear selection">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+      </button>
+    </div>
+
+    <!-- Empty state — shown when no active deferred tabs -->
+    <div class="deferred-empty" id="deferredEmpty" style="display:none">
+      Nothing saved. Living in the moment.
+    </div>
+
+    <!-- Archive section — collapsed by default -->
+    <div class="deferred-archive" id="deferredArchive" style="display:none">
+      <button class="archive-toggle" id="archiveToggle">
+        <svg class="archive-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+        Archive
+        <span class="archive-count" id="archiveCount"></span>
+      </button>
+      <div class="archive-body" id="archiveBody" style="display:none">
+        <input type="text" class="archive-search" id="archiveSearch" placeholder="Search archived tabs...">
+        <div class="archive-list" id="archiveList"></div>
       </div>
     </div>
-    <div class="last-refresh">
-      <span style="color: var(--muted); font-size: 11px;"><a href="https://github.com/zarazhangrui/tab-out" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Tab Out</a> by <a href="https://x.com/zarazhangrui" target="_top" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Zara</a></span>
-    </div>
-  </footer>
+  </div>
 
 </div><!-- end .container -->
+
+<div class="bulk-move-modal" id="bulkMoveModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="bulkMoveTitle">
+  <div class="bulk-move-card">
+    <div class="bulk-move-eyebrow">Move saved tabs</div>
+    <h2 id="bulkMoveTitle">Choose a destination list</h2>
+    <p id="bulkMoveSummary"></p>
+    <div id="bulkMoveTargets" class="bulk-move-targets"></div>
+    <div class="bulk-move-actions">
+      <button class="action-btn" type="button" data-action="cancel-bulk-move">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="list-delete-modal" id="listDeleteModal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="listDeleteTitle">
+  <div class="list-delete-card">
+    <div class="list-delete-eyebrow">Delete list</div>
+    <h2 id="listDeleteTitle">What should happen to these saved tabs?</h2>
+    <p id="listDeleteSummary"></p>
+
+    <label class="list-delete-choice">
+      <input type="radio" name="listDeleteMode" value="move" checked>
+      <span>Move tabs to another list</span>
+    </label>
+    <div id="listDeleteTargets" class="list-delete-targets"></div>
+
+    <label class="list-delete-choice">
+      <input type="radio" name="listDeleteMode" value="delete">
+      <span>Delete the list and its tabs</span>
+    </label>
+
+    <div class="list-delete-actions">
+      <button class="action-btn" type="button" data-action="cancel-list-delete">Cancel</button>
+      <button class="action-btn danger" type="button" data-action="confirm-list-delete">Delete list</button>
+    </div>
+  </div>
+</div>
 
 <!-- ================================================================
      TOAST — floats above everything, used for action confirmations
@@ -128,6 +166,12 @@
 <!-- Personal config (gitignored) — defines LOCAL_LANDING_PAGE_PATTERNS etc. -->
 <!-- If the file doesn't exist, that's fine — app.js uses sensible defaults. -->
 <script src="config.local.js" onerror="/* no personal config, that's fine */"></script>
+
+<!-- Theme helpers — shared by the extension page and lightweight tests -->
+<script src="theme.js"></script>
+<script src="deferred-lists.js"></script>
+<script src="dashboard-refresh.js"></script>
+<script src="drag-order.js"></script>
 
 <!-- Main dashboard logic — loads last so the DOM is ready -->
 <script src="app.js"></script>

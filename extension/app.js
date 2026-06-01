@@ -26,6 +26,83 @@
 // All open tabs — populated by fetchOpenTabs()
 let openTabs = [];
 
+const themeHelpers = window.TabOutTheme;
+const deferredListHelpers = window.TabOutDeferredLists;
+const dashboardRefresh = window.TabOutDashboardRefresh;
+const dragOrderHelpers = window.TabOutDragOrder;
+const themeMediaQuery = window.matchMedia
+  ? window.matchMedia('(prefers-color-scheme: dark)')
+  : { matches: false };
+let selectedThemeMode = 'system';
+let savedListMouseDrag = null;
+let openTabMouseDrag = null;
+let activeOpenTabDragChip = null;
+let suppressNextDeferredClick = false;
+let suppressNextOpenTabClick = false;
+let pendingListDelete = null;
+let selectedDeferredIds = new Set();
+let archiveWhenOpened = false;
+let lastOpenTabsHeaderHtml = '';
+let lastOpenTabsRenderSignature = '';
+let lastDeferredRenderSignature = '';
+let lastArchiveRenderSignature = '';
+let lastArchiveOpenedControlHtml = '';
+const ARCHIVE_WHEN_OPENED_STORAGE_KEY = 'archiveWhenOpened';
+
+function applyThemeMode(mode) {
+  selectedThemeMode = themeHelpers.normalizeThemeMode(mode);
+
+  const resolvedTheme = themeHelpers.resolveThemeMode(
+    selectedThemeMode,
+    themeMediaQuery.matches,
+  );
+
+  document.documentElement.dataset.themeMode = selectedThemeMode;
+  document.documentElement.dataset.theme = resolvedTheme;
+  updateThemeControl(selectedThemeMode);
+}
+
+function updateThemeControl(mode) {
+  const states = themeHelpers.getThemeButtonStates(mode);
+
+  for (const state of states) {
+    const button = document.querySelector(`[data-action="set-theme"][data-theme-mode="${state.mode}"]`);
+    if (!button) continue;
+    button.classList.toggle('is-selected', state.selected);
+    button.setAttribute('aria-pressed', state.selected ? 'true' : 'false');
+  }
+}
+
+async function loadThemeMode() {
+  try {
+    const stored = await chrome.storage.local.get(themeHelpers.THEME_MODE_STORAGE_KEY);
+    applyThemeMode(stored[themeHelpers.THEME_MODE_STORAGE_KEY]);
+  } catch {
+    applyThemeMode('system');
+  }
+}
+
+async function saveThemeMode(mode) {
+  const normalized = themeHelpers.normalizeThemeMode(mode);
+  applyThemeMode(normalized);
+  await chrome.storage.local.set({ [themeHelpers.THEME_MODE_STORAGE_KEY]: normalized });
+}
+
+function initThemeMode() {
+  applyThemeMode('system');
+  loadThemeMode();
+
+  const handleSystemThemeChange = () => {
+    if (selectedThemeMode === 'system') applyThemeMode('system');
+  };
+
+  if (themeMediaQuery.addEventListener) {
+    themeMediaQuery.addEventListener('change', handleSystemThemeChange);
+  } else if (themeMediaQuery.addListener) {
+    themeMediaQuery.addListener(handleSystemThemeChange);
+  }
+}
+
 /**
  * fetchOpenTabs()
  *
@@ -44,6 +121,7 @@ async function fetchOpenTabs() {
       url:      t.url,
       title:    t.title,
       windowId: t.windowId,
+      index:    t.index,
       active:   t.active,
       // Flag Tab Out's own pages so we can detect duplicate new tabs
       isTabOut: t.url === newtabUrl || t.url === 'chrome://newtab/',
@@ -211,12 +289,16 @@ async function closeTabOutDupes() {
        id: "1712345678901",          // timestamp-based unique ID
        url: "https://example.com",
        title: "Example Page",
+       listId: "inbox",              // saved list ID; missing = Inbox
        savedAt: "2026-04-04T10:00:00.000Z",  // ISO date string
        completed: false,             // true = checked off (archived)
        dismissed: false              // true = dismissed without reading
      },
      ...
    ]
+
+   User-created lists are stored under "deferredLists":
+   [{ id: "list-reading", name: "Reading", createdAt: "..." }]
    ---------------------------------------------------------------- */
 
 /**
@@ -231,11 +313,42 @@ async function saveTabForLater(tab) {
     id:        Date.now().toString(),
     url:       tab.url,
     title:     tab.title,
+    listId:    deferredListHelpers.DEFAULT_DEFERRED_LIST_ID,
     savedAt:   new Date().toISOString(),
     completed: false,
     dismissed: false,
   });
   await chrome.storage.local.set({ deferred });
+}
+
+async function getDeferredLists() {
+  const { deferredLists = [] } = await chrome.storage.local.get('deferredLists');
+  return deferredListHelpers.normalizeDeferredLists(deferredLists);
+}
+
+function createUniqueDeferredList(name, existingLists) {
+  const base = deferredListHelpers.createDeferredList(name);
+  const existingIds = new Set(existingLists.map(list => list.id));
+  if (!existingIds.has(base.id)) return base;
+
+  let suffix = 2;
+  let id = `${base.id}-${suffix}`;
+  while (existingIds.has(id)) {
+    suffix += 1;
+    id = `${base.id}-${suffix}`;
+  }
+  return { ...base, id };
+}
+
+async function addDeferredList(name) {
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return null;
+
+  const lists = await getDeferredLists();
+  const list = createUniqueDeferredList(trimmedName, lists);
+  const userLists = [...lists.filter(l => !l.isDefault), list];
+  await chrome.storage.local.set({ deferredLists: userLists });
+  return list;
 }
 
 /**
@@ -246,11 +359,15 @@ async function saveTabForLater(tab) {
  * Splits into active (not completed) and archived (completed).
  */
 async function getSavedTabs() {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
   const visible = deferred.filter(t => !t.dismissed);
+  const active = visible.filter(t => !t.completed);
+  const lists = deferredListHelpers.normalizeDeferredLists(deferredLists);
   return {
-    active:   visible.filter(t => !t.completed),
+    active,
     archived: visible.filter(t => t.completed),
+    lists,
+    groups: deferredListHelpers.groupDeferredTabsByList(active, lists),
   };
 }
 
@@ -281,6 +398,112 @@ async function dismissSavedTab(id) {
     tab.dismissed = true;
     await chrome.storage.local.set({ deferred });
   }
+}
+
+async function moveSavedTabToList(tabId, listId) {
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
+  const lists = deferredListHelpers.normalizeDeferredLists(deferredLists);
+  const knownListIds = new Set(lists.map(list => list.id));
+  if (!knownListIds.has(listId)) return false;
+
+  const moved = deferredListHelpers.moveDeferredTabToList(deferred, tabId, listId);
+  await chrome.storage.local.set({ deferred: moved });
+  return true;
+}
+
+async function reorderSavedTab(tabId, listId, beforeTabId = null) {
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
+  const lists = deferredListHelpers.normalizeDeferredLists(deferredLists);
+  const knownListIds = new Set(lists.map(list => list.id));
+  if (!knownListIds.has(listId)) return false;
+
+  const moved = deferredListHelpers.reorderDeferredTab(deferred, tabId, listId, beforeTabId);
+  await chrome.storage.local.set({ deferred: moved });
+  return true;
+}
+
+async function deleteSavedList(listId, mode, targetListId) {
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
+  const result = deferredListHelpers.deleteDeferredList({
+    deferred,
+    lists: deferredLists,
+    listId,
+    mode,
+    targetListId,
+  });
+  await chrome.storage.local.set({
+    deferred: result.deferred,
+    deferredLists: result.lists,
+  });
+}
+
+async function renameSavedList(listId, name) {
+  const { deferredLists = [] } = await chrome.storage.local.get('deferredLists');
+  const lists = deferredListHelpers.renameDeferredList(deferredLists, listId, name);
+  await chrome.storage.local.set({ deferredLists: lists });
+}
+
+async function updateSavedTabTitle(tabId, title) {
+  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const updated = deferredListHelpers.updateDeferredTabTitle(deferred, tabId, title);
+  await chrome.storage.local.set({ deferred: updated });
+}
+
+async function bulkUpdateSavedTabs(action, targetListId) {
+  const ids = [...selectedDeferredIds];
+  if (ids.length === 0) return 0;
+
+  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const updated = deferredListHelpers.bulkUpdateDeferredTabs(deferred, ids, action, targetListId);
+  await chrome.storage.local.set({ deferred: updated });
+  selectedDeferredIds = new Set();
+  return ids.length;
+}
+
+async function setArchiveWhenOpened(enabled) {
+  archiveWhenOpened = Boolean(enabled);
+  await chrome.storage.local.set({ [ARCHIVE_WHEN_OPENED_STORAGE_KEY]: archiveWhenOpened });
+}
+
+async function loadArchiveWhenOpened() {
+  try {
+    const stored = await chrome.storage.local.get(ARCHIVE_WHEN_OPENED_STORAGE_KEY);
+    archiveWhenOpened = Boolean(stored[ARCHIVE_WHEN_OPENED_STORAGE_KEY]);
+  } catch {
+    archiveWhenOpened = false;
+  }
+}
+
+async function openSavedTabsByIds(ids, shouldArchive = archiveWhenOpened, openActive = false) {
+  const uniqueIds = [...new Set(ids)].filter(Boolean);
+  if (uniqueIds.length === 0) return 0;
+
+  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const idSet = new Set(uniqueIds);
+  const tabsToOpen = deferred.filter(tab => (
+    idSet.has(tab.id) &&
+    !tab.dismissed &&
+    !tab.completed &&
+    tab.url
+  ));
+
+  for (let i = 0; i < tabsToOpen.length; i += 1) {
+    await chrome.tabs.create({ url: tabsToOpen[i].url, active: openActive && i === 0 });
+  }
+
+  if (shouldArchive && tabsToOpen.length > 0) {
+    const openedIds = tabsToOpen.map(tab => tab.id);
+    const updated = deferredListHelpers.bulkUpdateDeferredTabs(
+      deferred,
+      openedIds,
+      'archive',
+      undefined,
+    );
+    await chrome.storage.local.set({ deferred: updated });
+    selectedDeferredIds = new Set([...selectedDeferredIds].filter(id => !openedIds.includes(id)));
+  }
+
+  return tabsToOpen.length;
 }
 
 
@@ -440,6 +663,10 @@ function showToast(message) {
   document.getElementById('toastText').textContent = message;
   toast.classList.add('visible');
   setTimeout(() => toast.classList.remove('visible'), 2500);
+}
+
+function stableStringify(value) {
+  return JSON.stringify(value);
 }
 
 /**
@@ -698,6 +925,7 @@ function smartTitle(title, url) {
 const ICONS = {
   tabs:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" /></svg>`,
   close:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>`,
+  edit:    `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 7.125 16.875 4.5M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>`,
   archive: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5m6 4.125l2.25 2.25m0 0l2.25 2.25M12 13.875l2.25-2.25M12 13.875l-2.25 2.25M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z" /></svg>`,
   focus:   `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" /></svg>`,
 };
@@ -768,7 +996,7 @@ function buildOverflowChips(hiddenTabs, urlCounts = {}) {
     let domain = '';
     try { domain = new URL(tab.url).hostname; } catch {}
     const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
+    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-id="${tab.id}" data-window-id="${tab.windowId}" data-tab-index="${tab.index}" data-tab-url="${safeUrl}" title="${safeTitle}">
       ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
       <span class="chip-text">${label}</span>${dupeTag}
       <div class="chip-actions">
@@ -849,7 +1077,7 @@ function renderDomainCard(group) {
     let domain = '';
     try { domain = new URL(tab.url).hostname; } catch {}
     const faviconUrl = domain ? `https://www.google.com/s2/favicons?domain=${domain}&sz=16` : '';
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
+    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-id="${tab.id}" data-window-id="${tab.windowId}" data-tab-index="${tab.index}" data-tab-url="${safeUrl}" title="${safeTitle}">
       ${faviconUrl ? `<img class="chip-favicon" src="${faviconUrl}" alt="" onerror="this.style.display='none'">` : ''}
       <span class="chip-text">${label}</span>${dupeTag}
       <div class="chip-actions">
@@ -920,41 +1148,165 @@ async function renderDeferredColumn() {
   if (!column) return;
 
   try {
-    const { active, archived } = await getSavedTabs();
+    const { active, archived, lists, groups } = await getSavedTabs();
 
     // Hide the entire column if there's nothing to show
-    if (active.length === 0 && archived.length === 0) {
+    if (active.length === 0 && archived.length === 0 && lists.length <= 1) {
       column.style.display = 'none';
+      lastDeferredRenderSignature = '';
+      lastArchiveRenderSignature = '';
+      lastArchiveOpenedControlHtml = '';
       return;
     }
 
     column.style.display = 'block';
+    renderArchiveOpenedControl();
 
     // Render active checklist items
     if (active.length > 0) {
+      const activeIds = new Set(active.map(item => item.id));
+      selectedDeferredIds = new Set([...selectedDeferredIds].filter(id => activeIds.has(id)));
       countEl.textContent = `${active.length} item${active.length !== 1 ? 's' : ''}`;
-      list.innerHTML = active.map(item => renderDeferredItem(item)).join('');
+      const deferredSignature = stableStringify({
+        groups: groups.map(group => ({
+          list: group.list,
+          items: group.items.map(item => ({
+            id: item.id,
+            url: item.url,
+            title: item.title,
+            listId: item.listId,
+            savedAt: item.savedAt,
+          })),
+        })),
+        selected: [...selectedDeferredIds].sort(),
+      });
+      if (deferredSignature !== lastDeferredRenderSignature) {
+        list.innerHTML = groups.map(group => renderDeferredListGroup(group)).join('');
+        lastDeferredRenderSignature = deferredSignature;
+      }
       list.style.display = 'block';
       empty.style.display = 'none';
+    } else if (lists.length > 1) {
+      countEl.textContent = '0 items';
+      const deferredSignature = stableStringify({
+        groups: groups.map(group => ({ list: group.list, items: [] })),
+        selected: [],
+      });
+      if (deferredSignature !== lastDeferredRenderSignature) {
+        list.innerHTML = groups.map(group => renderDeferredListGroup(group)).join('');
+        lastDeferredRenderSignature = deferredSignature;
+      }
+      list.style.display = 'block';
+      empty.style.display = 'block';
     } else {
       list.style.display = 'none';
       countEl.textContent = '';
       empty.style.display = 'block';
+      lastDeferredRenderSignature = '';
     }
+    updateDeferredBulkBar();
 
     // Render archive section
     if (archived.length > 0) {
       archiveCountEl.textContent = `(${archived.length})`;
-      archiveList.innerHTML = archived.map(item => renderArchiveItem(item)).join('');
+      const archiveSignature = stableStringify(archived.map(item => ({
+        id: item.id,
+        url: item.url,
+        title: item.title,
+        completedAt: item.completedAt,
+        savedAt: item.savedAt,
+      })));
+      if (archiveSignature !== lastArchiveRenderSignature) {
+        archiveList.innerHTML = archived.map(item => renderArchiveItem(item)).join('');
+        lastArchiveRenderSignature = archiveSignature;
+      }
       archiveEl.style.display = 'block';
     } else {
       archiveEl.style.display = 'none';
+      archiveList.innerHTML = '';
+      lastArchiveRenderSignature = '';
     }
 
   } catch (err) {
     console.warn('[tab-out] Could not load saved tabs:', err);
     column.style.display = 'none';
   }
+}
+
+function renderDeferredListGroup(group) {
+  const list = group.list;
+  const items = group.items || [];
+  const safeListId = (list.id || '').replace(/"/g, '&quot;');
+  const safeListName = (list.name || '').replace(/"/g, '&quot;');
+  const emptyText = list.isDefault ? 'New saves land here.' : 'Drop saved links here.';
+  const renameButton = list.isDefault ? '' : `
+    <button class="deferred-list-edit" type="button" data-action="rename-deferred-list" data-list-id="${safeListId}" data-list-name="${safeListName}" title="Rename list">
+      ${ICONS.edit}
+    </button>`;
+  const deleteButton = list.isDefault ? '' : `
+    <button class="deferred-list-delete" type="button" data-action="open-list-delete" data-list-id="${safeListId}" title="Delete list">
+      ${ICONS.close}
+    </button>`;
+  const openAllButton = items.length === 0 ? '' : `
+    <button class="deferred-list-open-all" type="button" data-action="open-deferred-list" data-list-id="${safeListId}" title="Open all saved tabs in ${safeListName}">
+      ${ICONS.focus}
+      Open all
+    </button>`;
+
+  return `
+    <div class="deferred-list-group" data-deferred-list-id="${safeListId}">
+      <div class="deferred-list-header">
+        <span class="deferred-list-name">${list.name}</span>
+        <span class="deferred-list-count">${items.length}</span>
+        ${openAllButton}
+        ${renameButton}
+        ${deleteButton}
+      </div>
+      <div class="deferred-list-items">
+        ${items.length > 0
+          ? items.map(item => renderDeferredItem(item)).join('')
+          : `<div class="deferred-list-empty">${emptyText}</div>`}
+      </div>
+    </div>`;
+}
+
+function updateDeferredBulkBar() {
+  const bar = document.getElementById('deferredBulkBar');
+  const countEl = document.getElementById('deferredBulkCount');
+  if (!bar || !countEl) return;
+
+  const count = selectedDeferredIds.size;
+  if (count === 0) {
+    bar.style.display = 'none';
+    countEl.textContent = '0 selected';
+    return;
+  }
+
+  countEl.textContent = `${count} selected`;
+  bar.style.display = 'flex';
+}
+
+function renderArchiveOpenedControl() {
+  const countEl = document.getElementById('deferredCount');
+  if (!countEl) return;
+
+  const checked = archiveWhenOpened ? ' checked' : '';
+  const html = `
+    <label class="archive-opened-toggle">
+      <input type="checkbox" data-action="toggle-archive-when-opened"${checked}>
+      <span>Archive when opened</span>
+    </label>`;
+
+  if (html === lastArchiveOpenedControlHtml) return;
+
+  let control = document.getElementById('archiveOpenedToggleWrap');
+  if (!control) {
+    control = document.createElement('span');
+    control.id = 'archiveOpenedToggleWrap';
+    countEl.insertAdjacentElement('afterend', control);
+  }
+  control.innerHTML = html;
+  lastArchiveOpenedControlHtml = html;
 }
 
 /**
@@ -968,12 +1320,13 @@ function renderDeferredItem(item) {
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
   const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
   const ago = timeAgo(item.savedAt);
+  const checked = selectedDeferredIds.has(item.id) ? ' checked' : '';
 
   return `
-    <div class="deferred-item" data-deferred-id="${item.id}">
-      <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
+    <div class="deferred-item" data-deferred-id="${item.id}" draggable="true">
+      <input type="checkbox" class="deferred-checkbox" data-action="toggle-deferred-selection" data-deferred-id="${item.id}"${checked}>
       <div class="deferred-info">
-        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
+        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" data-action="open-deferred-tab" data-deferred-id="${item.id}" title="${(item.title || '').replace(/"/g, '&quot;')}">
           <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${item.title || item.url}
         </a>
         <div class="deferred-meta">
@@ -981,6 +1334,9 @@ function renderDeferredItem(item) {
           <span>${ago}</span>
         </div>
       </div>
+      <button class="deferred-edit-title" data-action="rename-deferred-tab" data-deferred-id="${item.id}" data-deferred-title="${(item.title || item.url || '').replace(/"/g, '&quot;')}" title="Rename saved tab">
+        ${ICONS.edit}
+      </button>
       <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" title="Dismiss">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
       </button>
@@ -1003,6 +1359,78 @@ function renderArchiveItem(item) {
     </div>`;
 }
 
+async function openListDeleteModal(listId) {
+  const modal = document.getElementById('listDeleteModal');
+  const summary = document.getElementById('listDeleteSummary');
+  const targets = document.getElementById('listDeleteTargets');
+  if (!modal || !summary || !targets) return;
+
+  const { groups, lists } = await getSavedTabs();
+  const group = groups.find(g => g.list.id === listId);
+  if (!group || group.list.isDefault) return;
+  if (group.items.length === 0) {
+    await deleteSavedList(listId, 'delete');
+    await renderDeferredColumn();
+    showToast(`Deleted ${group.list.name}`);
+    return;
+  }
+
+  const targetLists = lists.filter(list => list.id !== listId);
+  pendingListDelete = { listId };
+
+  summary.textContent = `"${group.list.name}" has ${group.items.length} saved tab${group.items.length !== 1 ? 's' : ''}.`;
+  targets.innerHTML = targetLists.map((list, index) => `
+    <label class="list-delete-target">
+      <input type="radio" name="listDeleteTarget" value="${(list.id || '').replace(/"/g, '&quot;')}" ${index === 0 ? 'checked' : ''}>
+      <span>${list.name}</span>
+    </label>
+  `).join('');
+  modal.querySelector('input[name="listDeleteMode"][value="move"]').checked = targetLists.length > 0;
+  modal.querySelector('input[name="listDeleteMode"][value="delete"]').checked = targetLists.length === 0;
+  targets.classList.toggle('is-disabled', targetLists.length === 0);
+  modal.style.display = 'flex';
+}
+
+function closeListDeleteModal() {
+  const modal = document.getElementById('listDeleteModal');
+  if (modal) modal.style.display = 'none';
+  pendingListDelete = null;
+}
+
+async function confirmListDelete() {
+  if (!pendingListDelete) return;
+
+  const modal = document.getElementById('listDeleteModal');
+  const mode = modal?.querySelector('input[name="listDeleteMode"]:checked')?.value || 'delete';
+  const targetListId = modal?.querySelector('input[name="listDeleteTarget"]:checked')?.value;
+  await deleteSavedList(pendingListDelete.listId, mode, targetListId);
+  closeListDeleteModal();
+  await renderDeferredColumn();
+  showToast(mode === 'move' ? 'List deleted, tabs moved' : 'List and tabs deleted');
+}
+
+async function openBulkMoveModal() {
+  const modal = document.getElementById('bulkMoveModal');
+  const summary = document.getElementById('bulkMoveSummary');
+  const targets = document.getElementById('bulkMoveTargets');
+  if (!modal || !summary || !targets || selectedDeferredIds.size === 0) return;
+
+  const { lists } = await getSavedTabs();
+  summary.textContent = `${selectedDeferredIds.size} saved tab${selectedDeferredIds.size !== 1 ? 's' : ''} selected.`;
+  targets.innerHTML = lists.map(list => `
+    <button class="bulk-move-target" type="button" data-action="bulk-move-deferred" data-list-id="${(list.id || '').replace(/"/g, '&quot;')}">
+      <span>${list.name}</span>
+      <span class="bulk-move-target-hint">Move here</span>
+    </button>
+  `).join('');
+  modal.style.display = 'flex';
+}
+
+function closeBulkMoveModal() {
+  const modal = document.getElementById('bulkMoveModal');
+  if (modal) modal.style.display = 'none';
+}
+
 
 /* ----------------------------------------------------------------
    MAIN DASHBOARD RENDERER
@@ -1016,7 +1444,7 @@ function renderArchiveItem(item) {
  * 2. Fetches open tabs via chrome.tabs.query()
  * 3. Groups tabs by domain (with landing pages pulled out to their own group)
  * 4. Renders domain cards
- * 5. Updates footer stats
+ * 5. Updates section stats
  * 6. Renders the "Saved for Later" checklist
  */
 async function renderStaticDashboard() {
@@ -1150,16 +1578,33 @@ async function renderStaticDashboard() {
 
   if (domainGroups.length > 0 && openTabsSection) {
     if (openTabsSectionTitle) openTabsSectionTitle.textContent = 'Open tabs';
-    openTabsSectionCount.innerHTML = `${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
-    openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
+    const openTabsHeaderHtml = `${realTabs.length} open tab${realTabs.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; ${domainGroups.length} domain${domainGroups.length !== 1 ? 's' : ''} &nbsp;&middot;&nbsp; <button class="action-btn close-tabs" data-action="close-all-open-tabs" style="font-size:11px;padding:3px 10px;">${ICONS.close} Close all ${realTabs.length} tabs</button>`;
+    if (openTabsHeaderHtml !== lastOpenTabsHeaderHtml) {
+      openTabsSectionCount.innerHTML = openTabsHeaderHtml;
+      lastOpenTabsHeaderHtml = openTabsHeaderHtml;
+    }
+    const openTabsSignature = stableStringify(domainGroups.map(group => ({
+      domain: group.domain,
+      label: group.label,
+      tabs: group.tabs.map(tab => ({
+        id: tab.id,
+        url: tab.url,
+        title: tab.title,
+        windowId: tab.windowId,
+        index: tab.index,
+        active: tab.active,
+      })),
+    })));
+    if (openTabsSignature !== lastOpenTabsRenderSignature) {
+      openTabsMissionsEl.innerHTML = domainGroups.map(g => renderDomainCard(g)).join('');
+      lastOpenTabsRenderSignature = openTabsSignature;
+    }
     openTabsSection.style.display = 'block';
   } else if (openTabsSection) {
     openTabsSection.style.display = 'none';
+    lastOpenTabsHeaderHtml = '';
+    lastOpenTabsRenderSignature = '';
   }
-
-  // --- Footer stats ---
-  const statTabs = document.getElementById('statTabs');
-  if (statTabs) statTabs.textContent = openTabs.length;
 
   // --- Check for duplicate Tab Out tabs ---
   checkTabOutDupes();
@@ -1187,6 +1632,157 @@ document.addEventListener('click', async (e) => {
   if (!actionEl) return;
 
   const action = actionEl.dataset.action;
+
+  // ---- Theme switcher ----
+  if (action === 'set-theme') {
+    const mode = actionEl.dataset.themeMode;
+    await saveThemeMode(mode);
+    const normalized = themeHelpers.normalizeThemeMode(mode);
+    const label = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    showToast(normalized === 'system' ? 'Following system theme' : `${label} theme selected`);
+    return;
+  }
+
+  // ---- Create a saved-tabs list ----
+  if (action === 'create-deferred-list') {
+    const name = window.prompt('Name this list');
+    const list = await addDeferredList(name);
+    if (!list) return;
+
+    await renderDeferredColumn();
+    showToast(`Created ${list.name}`);
+    return;
+  }
+
+  if (action === 'open-list-delete') {
+    const listId = actionEl.dataset.listId;
+    if (listId) await openListDeleteModal(listId);
+    return;
+  }
+
+  if (action === 'rename-deferred-list') {
+    const listId = actionEl.dataset.listId;
+    const currentName = actionEl.dataset.listName || '';
+    const name = window.prompt('Rename this list', currentName);
+    if (!listId || name === null) return;
+
+    await renameSavedList(listId, name);
+    await renderDeferredColumn();
+    showToast('List renamed');
+    return;
+  }
+
+  if (action === 'rename-deferred-tab') {
+    e.stopPropagation();
+    const tabId = actionEl.dataset.deferredId;
+    const currentTitle = actionEl.dataset.deferredTitle || '';
+    const title = window.prompt('Title for this saved tab', currentTitle);
+    if (!tabId || title === null) return;
+
+    await updateSavedTabTitle(tabId, title);
+    await renderDeferredColumn();
+    showToast('Saved tab renamed');
+    return;
+  }
+
+  if (action === 'cancel-list-delete') {
+    closeListDeleteModal();
+    return;
+  }
+
+  if (action === 'confirm-list-delete') {
+    await confirmListDelete();
+    return;
+  }
+
+  if (action === 'toggle-deferred-selection') {
+    const id = actionEl.dataset.deferredId;
+    if (!id) return;
+
+    if (actionEl.checked) {
+      selectedDeferredIds.add(id);
+    } else {
+      selectedDeferredIds.delete(id);
+    }
+    updateDeferredBulkBar();
+    return;
+  }
+
+  if (action === 'toggle-archive-when-opened') {
+    await setArchiveWhenOpened(actionEl.checked);
+    lastArchiveOpenedControlHtml = '';
+    renderArchiveOpenedControl();
+    showToast(archiveWhenOpened ? 'Will archive opened saved tabs' : 'Opened saved tabs stay saved');
+    return;
+  }
+
+  if (action === 'clear-deferred-selection') {
+    selectedDeferredIds = new Set();
+    await renderDeferredColumn();
+    return;
+  }
+
+  if (action === 'bulk-open-deferred') {
+    const count = await openSavedTabsByIds([...selectedDeferredIds]);
+    await renderDeferredColumn();
+    if (count > 0) showToast(`Opened ${count} saved tab${count !== 1 ? 's' : ''}`);
+    return;
+  }
+
+  if (action === 'bulk-archive-deferred') {
+    const count = await bulkUpdateSavedTabs('archive');
+    await renderDeferredColumn();
+    if (count > 0) showToast(`Archived ${count} saved tab${count !== 1 ? 's' : ''}`);
+    return;
+  }
+
+  if (action === 'bulk-delete-deferred') {
+    const count = await bulkUpdateSavedTabs('delete');
+    await renderDeferredColumn();
+    if (count > 0) showToast(`Deleted ${count} saved tab${count !== 1 ? 's' : ''}`);
+    return;
+  }
+
+  if (action === 'open-bulk-move-deferred') {
+    await openBulkMoveModal();
+    return;
+  }
+
+  if (action === 'cancel-bulk-move') {
+    closeBulkMoveModal();
+    return;
+  }
+
+  if (action === 'bulk-move-deferred') {
+    const listId = actionEl.dataset.listId;
+    const count = await bulkUpdateSavedTabs('move', listId);
+    closeBulkMoveModal();
+    await renderDeferredColumn();
+    if (count > 0) showToast(`Moved ${count} saved tab${count !== 1 ? 's' : ''}`);
+    return;
+  }
+
+  if (action === 'open-deferred-tab') {
+    e.preventDefault();
+    const id = actionEl.dataset.deferredId;
+    const count = await openSavedTabsByIds([id], archiveWhenOpened, true);
+    await renderDeferredColumn();
+    if (count > 0 && archiveWhenOpened) showToast('Opened and archived');
+    return;
+  }
+
+  if (action === 'open-deferred-list') {
+    const listId = actionEl.dataset.listId;
+    if (!listId) return;
+
+    const { groups } = await getSavedTabs();
+    const group = groups.find(g => g.list.id === listId);
+    const ids = group ? group.items.map(item => item.id) : [];
+    const count = await openSavedTabsByIds(ids);
+    await renderDeferredColumn();
+    if (count > 0) showToast(`Opened ${count} saved tab${count !== 1 ? 's' : ''}`);
+    return;
+  }
 
   // ---- Close duplicate Tab Out tabs ----
   if (action === 'close-tabout-dupes') {
@@ -1256,10 +1852,6 @@ document.addEventListener('click', async (e) => {
       }, 200);
     }
 
-    // Update footer
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
-
     showToast('Tab closed');
     return;
   }
@@ -1300,7 +1892,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // ---- Check off a saved tab (moves it to archive) ----
+  // ---- Legacy check-off action (older rendered pages) ----
   if (action === 'check-deferred') {
     const id = actionEl.dataset.deferredId;
     if (!id) return;
@@ -1371,8 +1963,6 @@ document.addEventListener('click', async (e) => {
     const groupLabel = group.domain === '__landing-pages__' ? 'Homepages' : (group.label || friendlyDomain(group.domain));
     showToast(`Closed ${urls.length} tab${urls.length !== 1 ? 's' : ''} from ${groupLabel}`);
 
-    const statTabs = document.getElementById('statTabs');
-    if (statTabs) statTabs.textContent = openTabs.length;
     return;
   }
 
@@ -1433,6 +2023,289 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+function getDeferredDropTarget(x, y) {
+  const target = document.elementFromPoint(x, y);
+  const group = target?.closest('.deferred-list-group');
+  if (!group) return null;
+
+  const targetItem = target.closest('.deferred-item');
+  let beforeTabId = null;
+  if (targetItem) {
+    const rect = targetItem.getBoundingClientRect();
+    const dropAfterTarget = y > rect.top + rect.height / 2;
+    if (dropAfterTarget) {
+      const nextItem = targetItem.nextElementSibling?.closest?.('.deferred-item');
+      beforeTabId = nextItem?.dataset.deferredId || null;
+    } else {
+      beforeTabId = targetItem.dataset.deferredId || null;
+    }
+  }
+
+  return {
+    group,
+    listId: group.dataset.deferredListId,
+    beforeTabId,
+  };
+}
+
+async function moveOpenTabWithinSection(draggedId, targetId, dropAfterTarget) {
+  if (!draggedId || !targetId || draggedId === targetId) return false;
+
+  const draggedTab = openTabs.find(tab => String(tab.id) === String(draggedId));
+  const targetTab = openTabs.find(tab => String(tab.id) === String(targetId));
+  if (!draggedTab || !targetTab || draggedTab.windowId !== targetTab.windowId) return false;
+
+  const targetIndex = dragOrderHelpers.calculateChromeMoveIndex({
+    draggedIndex: draggedTab.index,
+    targetIndex: targetTab.index,
+    dropAfterTarget,
+  });
+  if (targetIndex === null) return false;
+
+  await chrome.tabs.move(draggedTab.id, { index: targetIndex });
+  await fetchOpenTabs();
+  return true;
+}
+
+function clearOpenTabDragState() {
+  if (activeOpenTabDragChip) activeOpenTabDragChip.classList.remove('dragging');
+  activeOpenTabDragChip = null;
+  openTabMouseDrag = null;
+  document.body.classList.remove('is-dragging-open-tab');
+  document.querySelectorAll('.page-chip.drag-over').forEach(chip => {
+    chip.classList.remove('drag-over');
+  });
+}
+
+function clearDeferredDragState() {
+  if (savedListMouseDrag?.item) savedListMouseDrag.item.classList.remove('dragging');
+  savedListMouseDrag = null;
+  document.body.classList.remove('is-dragging-deferred');
+  document.querySelectorAll('.deferred-list-group.drag-over').forEach(group => {
+    group.classList.remove('drag-over');
+  });
+}
+
+function moveOpenTabChipInDom(draggedId, targetChip, dropAfterTarget) {
+  const draggedChip = document.querySelector(`.page-chip[data-tab-id="${CSS.escape(String(draggedId))}"]`);
+  if (!draggedChip || !targetChip || draggedChip === targetChip) return;
+
+  const parent = targetChip.parentElement;
+  if (!parent || draggedChip.parentElement !== parent) return;
+
+  parent.insertBefore(draggedChip, dropAfterTarget ? targetChip.nextSibling : targetChip);
+}
+
+function updateDeferredListCount(group) {
+  const countEl = group?.querySelector('.deferred-list-count');
+  const itemsEl = group?.querySelector('.deferred-list-items');
+  if (!countEl || !itemsEl) return;
+
+  countEl.textContent = itemsEl.querySelectorAll('.deferred-item').length;
+}
+
+function moveDeferredItemInDom(draggedId, targetGroup, beforeTabId) {
+  const draggedItem = document.querySelector(`.deferred-item[data-deferred-id="${CSS.escape(String(draggedId))}"]`);
+  const targetItems = targetGroup?.querySelector('.deferred-list-items');
+  if (!draggedItem || !targetItems) return;
+
+  const sourceGroup = draggedItem.closest('.deferred-list-group');
+  targetItems.querySelector('.deferred-list-empty')?.remove();
+  const beforeItem = beforeTabId
+    ? targetItems.querySelector(`.deferred-item[data-deferred-id="${CSS.escape(String(beforeTabId))}"]`)
+    : null;
+
+  targetItems.insertBefore(draggedItem, beforeItem);
+  updateDeferredListCount(sourceGroup);
+  updateDeferredListCount(targetGroup);
+}
+
+// ---- Saved-list and open-tab drag and drop ----
+document.addEventListener('dragstart', (e) => {
+  const item = e.target.closest('.deferred-item');
+  if (!item) return;
+
+  const id = item.dataset.deferredId;
+  if (!id) return;
+
+  item.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', id);
+});
+
+document.addEventListener('dragend', (e) => {
+  const item = e.target.closest('.deferred-item');
+  if (item) item.classList.remove('dragging');
+  document.querySelectorAll('.deferred-list-group.drag-over').forEach(group => {
+    group.classList.remove('drag-over');
+  });
+});
+
+document.addEventListener('dragover', (e) => {
+  const group = e.target.closest('.deferred-list-group');
+  if (!group) return;
+
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  group.classList.add('drag-over');
+});
+
+document.addEventListener('dragleave', (e) => {
+  const group = e.target.closest('.deferred-list-group');
+  if (!group || group.contains(e.relatedTarget)) return;
+  group.classList.remove('drag-over');
+});
+
+document.addEventListener('drop', async (e) => {
+  const group = e.target.closest('.deferred-list-group');
+  if (!group) return;
+
+  e.preventDefault();
+  group.classList.remove('drag-over');
+
+  const tabId = e.dataTransfer.getData('text/plain');
+  const dropTarget = getDeferredDropTarget(e.clientX, e.clientY);
+  if (!tabId || !dropTarget?.listId) return;
+
+  const moved = await reorderSavedTab(tabId, dropTarget.listId, dropTarget.beforeTabId);
+  if (!moved) return;
+
+  moveDeferredItemInDom(tabId, dropTarget.group, dropTarget.beforeTabId);
+  const listName = dropTarget.group.querySelector('.deferred-list-name')?.textContent || 'list';
+  showToast(`Moved to ${listName}`);
+});
+
+document.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+
+  const chip = e.target.closest('.page-chip[data-tab-id]');
+  if (chip && !e.target.closest('.chip-action, button')) {
+    openTabMouseDrag = {
+      id: chip.dataset.tabId,
+      chip,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+    };
+    return;
+  }
+
+  const item = e.target.closest('.deferred-item');
+  if (!item || e.target.closest('.deferred-checkbox, .deferred-dismiss, .deferred-edit-title')) return;
+
+  savedListMouseDrag = {
+    id: item.dataset.deferredId,
+    item,
+    startX: e.clientX,
+    startY: e.clientY,
+    active: false,
+  };
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (openTabMouseDrag) {
+    const dx = Math.abs(e.clientX - openTabMouseDrag.startX);
+    const dy = Math.abs(e.clientY - openTabMouseDrag.startY);
+    if (!openTabMouseDrag.active && dx + dy < 8) return;
+
+    openTabMouseDrag.active = true;
+    activeOpenTabDragChip = openTabMouseDrag.chip;
+    openTabMouseDrag.chip.classList.add('dragging');
+    document.body.classList.add('is-dragging-open-tab');
+
+    document.querySelectorAll('.page-chip.drag-over').forEach(chip => {
+      chip.classList.remove('drag-over');
+    });
+
+    const targetChip = document.elementFromPoint(e.clientX, e.clientY)?.closest('.page-chip[data-tab-id]');
+    if (targetChip && targetChip.dataset.tabId !== openTabMouseDrag.id) {
+      targetChip.classList.add('drag-over');
+    }
+    return;
+  }
+
+  if (!savedListMouseDrag) return;
+
+  const dx = Math.abs(e.clientX - savedListMouseDrag.startX);
+  const dy = Math.abs(e.clientY - savedListMouseDrag.startY);
+  if (!savedListMouseDrag.active && dx + dy < 8) return;
+
+  savedListMouseDrag.active = true;
+  savedListMouseDrag.item.classList.add('dragging');
+  document.body.classList.add('is-dragging-deferred');
+
+  document.querySelectorAll('.deferred-list-group.drag-over').forEach(group => {
+    group.classList.remove('drag-over');
+  });
+
+  const targetGroup = document.elementFromPoint(e.clientX, e.clientY)?.closest('.deferred-list-group');
+  if (targetGroup) targetGroup.classList.add('drag-over');
+});
+
+document.addEventListener('mouseup', async (e) => {
+  if (openTabMouseDrag) {
+    const drag = openTabMouseDrag;
+    clearOpenTabDragState();
+
+    if (!drag.active) return;
+
+    suppressNextOpenTabClick = true;
+    setTimeout(() => { suppressNextOpenTabClick = false; }, 0);
+
+    const targetChip = document.elementFromPoint(e.clientX, e.clientY)?.closest('.page-chip[data-tab-id]');
+    if (!targetChip || targetChip.dataset.tabId === drag.id) return;
+
+    const rect = targetChip.getBoundingClientRect();
+    const dropAfterTarget = e.clientY > rect.top + rect.height / 2;
+    const moved = await moveOpenTabWithinSection(drag.id, targetChip.dataset.tabId, dropAfterTarget);
+    if (!moved) {
+      showToast('Can only reorder tabs in the same Chrome window');
+      return;
+    }
+
+    moveOpenTabChipInDom(drag.id, targetChip, dropAfterTarget);
+    showToast('Tab reordered');
+    return;
+  }
+
+  if (!savedListMouseDrag) return;
+
+  const drag = savedListMouseDrag;
+  clearDeferredDragState();
+
+  if (!drag.active) return;
+
+  suppressNextDeferredClick = true;
+  setTimeout(() => { suppressNextDeferredClick = false; }, 0);
+
+  const dropTarget = getDeferredDropTarget(e.clientX, e.clientY);
+  if (!dropTarget) return;
+
+  const moved = await reorderSavedTab(drag.id, dropTarget.listId, dropTarget.beforeTabId);
+  if (!moved) return;
+
+  const listName = dropTarget.group.querySelector('.deferred-list-name')?.textContent || 'list';
+  moveDeferredItemInDom(drag.id, dropTarget.group, dropTarget.beforeTabId);
+  showToast(`Moved to ${listName}`);
+});
+
+window.addEventListener('blur', () => {
+  clearOpenTabDragState();
+  clearDeferredDragState();
+});
+
+document.addEventListener('click', (e) => {
+  if (suppressNextOpenTabClick && e.target.closest('.page-chip[data-tab-id]')) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+
+  if (!suppressNextDeferredClick || !e.target.closest('.deferred-item')) return;
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
 // ---- Archive toggle — expand/collapse the archive section ----
 document.addEventListener('click', (e) => {
   const toggle = e.target.closest('#archiveToggle');
@@ -1447,6 +2320,12 @@ document.addEventListener('click', (e) => {
 
 // ---- Archive search — filter archived items as user types ----
 document.addEventListener('input', async (e) => {
+  if (e.target.name === 'listDeleteMode') {
+    const targets = document.getElementById('listDeleteTargets');
+    if (targets) targets.classList.toggle('is-disabled', e.target.value !== 'move');
+    return;
+  }
+
   if (e.target.id !== 'archiveSearch') return;
 
   const q = e.target.value.trim().toLowerCase();
@@ -1479,4 +2358,11 @@ document.addEventListener('input', async (e) => {
 /* ----------------------------------------------------------------
    INITIALIZE
    ---------------------------------------------------------------- */
-renderDashboard();
+initThemeMode();
+loadArchiveWhenOpened().then(renderDashboard);
+dashboardRefresh.attachDashboardRefreshListeners({
+  document,
+  window,
+  chrome,
+  render: renderDashboard,
+});
