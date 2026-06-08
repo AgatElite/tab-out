@@ -292,7 +292,7 @@ async function closeTabOutDupes() {
        listId: "inbox",              // saved list ID; missing = Inbox
        savedAt: "2026-04-04T10:00:00.000Z",  // ISO date string
        completed: false,             // true = checked off (archived)
-       dismissed: false              // true = dismissed without reading
+       dismissed: false              // true = permanently hidden/deleted from archive
      },
      ...
    ]
@@ -372,32 +372,30 @@ async function getSavedTabs() {
 }
 
 /**
- * checkOffSavedTab(id)
+ * archiveSavedTab(id)
  *
- * Marks a saved tab as completed (checked off). It moves to the archive.
+ * Marks a saved tab as completed. It moves to the archive.
  */
-async function checkOffSavedTab(id) {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
-  const tab = deferred.find(t => t.id === id);
-  if (tab) {
-    tab.completed = true;
-    tab.completedAt = new Date().toISOString();
-    await chrome.storage.local.set({ deferred });
-  }
+async function archiveSavedTab(id) {
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
+  const updated = deferredListHelpers.bulkUpdateDeferredTabs(
+    deferred,
+    [id],
+    'archive',
+    undefined,
+    new Date().toISOString(),
+    deferredLists,
+  );
+  await chrome.storage.local.set({ deferred: updated });
 }
 
 /**
- * dismissSavedTab(id)
+ * checkOffSavedTab(id)
  *
- * Marks a saved tab as dismissed (removed from all lists).
+ * Legacy alias for older rendered pages.
  */
-async function dismissSavedTab(id) {
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
-  const tab = deferred.find(t => t.id === id);
-  if (tab) {
-    tab.dismissed = true;
-    await chrome.storage.local.set({ deferred });
-  }
+async function checkOffSavedTab(id) {
+  await archiveSavedTab(id);
 }
 
 async function moveSavedTabToList(tabId, listId) {
@@ -416,9 +414,33 @@ async function reorderSavedTab(tabId, listId, beforeTabId = null) {
   const lists = deferredListHelpers.normalizeDeferredLists(deferredLists);
   const knownListIds = new Set(lists.map(list => list.id));
   if (!knownListIds.has(listId)) return false;
+  const tab = deferred.find(t => t.id === tabId && !t.dismissed);
+  if (!tab) return false;
 
-  const moved = deferredListHelpers.reorderDeferredTab(deferred, tabId, listId, beforeTabId);
+  const moved = tab.completed
+    ? deferredListHelpers.restoreArchivedDeferredTab(deferred, deferredLists, tabId, listId, beforeTabId)
+    : deferredListHelpers.reorderDeferredTab(deferred, tabId, listId, beforeTabId);
   await chrome.storage.local.set({ deferred: moved });
+  return true;
+}
+
+async function restoreArchivedSavedTab(tabId, targetListId = null, beforeTabId = null) {
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
+  const tab = deferred.find(t => t.id === tabId && t.completed && !t.dismissed);
+  if (!tab) return false;
+
+  const restored = deferredListHelpers.restoreArchivedDeferredTab(deferred, deferredLists, tabId, targetListId, beforeTabId);
+  await chrome.storage.local.set({ deferred: restored });
+  return true;
+}
+
+async function deleteArchivedSavedTab(tabId) {
+  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const tab = deferred.find(t => t.id === tabId && t.completed && !t.dismissed);
+  if (!tab) return false;
+
+  const updated = deferredListHelpers.deleteArchivedDeferredTab(deferred, tabId);
+  await chrome.storage.local.set({ deferred: updated });
   return true;
 }
 
@@ -430,6 +452,7 @@ async function deleteSavedList(listId, mode, targetListId) {
     listId,
     mode,
     targetListId,
+    now: new Date().toISOString(),
   });
   await chrome.storage.local.set({
     deferred: result.deferred,
@@ -453,8 +476,15 @@ async function bulkUpdateSavedTabs(action, targetListId) {
   const ids = [...selectedDeferredIds];
   if (ids.length === 0) return 0;
 
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
-  const updated = deferredListHelpers.bulkUpdateDeferredTabs(deferred, ids, action, targetListId);
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
+  const updated = deferredListHelpers.bulkUpdateDeferredTabs(
+    deferred,
+    ids,
+    action,
+    targetListId,
+    new Date().toISOString(),
+    deferredLists,
+  );
   await chrome.storage.local.set({ deferred: updated });
   selectedDeferredIds = new Set();
   return ids.length;
@@ -478,7 +508,7 @@ async function openSavedTabsByIds(ids, shouldArchive = archiveWhenOpened, openAc
   const uniqueIds = [...new Set(ids)].filter(Boolean);
   if (uniqueIds.length === 0) return 0;
 
-  const { deferred = [] } = await chrome.storage.local.get('deferred');
+  const { deferred = [], deferredLists = [] } = await chrome.storage.local.get(['deferred', 'deferredLists']);
   const idSet = new Set(uniqueIds);
   const tabsToOpen = deferred.filter(tab => (
     idSet.has(tab.id) &&
@@ -498,6 +528,8 @@ async function openSavedTabsByIds(ids, shouldArchive = archiveWhenOpened, openAc
       openedIds,
       'archive',
       undefined,
+      new Date().toISOString(),
+      deferredLists,
     );
     await chrome.storage.local.set({ deferred: updated });
     selectedDeferredIds = new Set([...selectedDeferredIds].filter(id => !openedIds.includes(id)));
@@ -1213,7 +1245,10 @@ async function renderDeferredColumn() {
         id: item.id,
         url: item.url,
         title: item.title,
+        listId: item.listId,
         completedAt: item.completedAt,
+        archivedFromListId: item.archivedFromListId,
+        archivedFromListName: item.archivedFromListName,
         savedAt: item.savedAt,
       })));
       if (archiveSignature !== lastArchiveRenderSignature) {
@@ -1338,7 +1373,7 @@ function renderDeferredItem(item) {
       <button class="deferred-edit-title" data-action="rename-deferred-tab" data-deferred-id="${item.id}" data-deferred-title="${(item.title || item.url || '').replace(/"/g, '&quot;')}" title="Rename saved tab">
         ${ICONS.edit}
       </button>
-      <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" title="Dismiss">
+      <button class="deferred-dismiss" data-action="archive-deferred" data-deferred-id="${item.id}" title="Archive saved tab">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
       </button>
     </div>`;
@@ -1352,11 +1387,19 @@ function renderDeferredItem(item) {
 function renderArchiveItem(item) {
   const ago = item.completedAt ? timeAgo(item.completedAt) : timeAgo(item.savedAt);
   return `
-    <div class="archive-item">
-      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
+    <div class="archive-item" data-deferred-id="${item.id}">
+      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" draggable="false" title="${(item.title || '').replace(/"/g, '&quot;')}">
         ${item.title || item.url}
       </a>
       <span class="archive-item-date">${ago}</span>
+      <div class="archive-item-actions">
+        <button class="archive-restore" type="button" data-action="restore-archived-tab" data-deferred-id="${item.id}" title="Restore to list">
+          ${ICONS.focus}
+        </button>
+        <button class="archive-delete" type="button" data-action="delete-archived-tab" data-deferred-id="${item.id}" title="Delete permanently">
+          ${ICONS.close}
+        </button>
+      </div>
     </div>`;
 }
 
@@ -1400,7 +1443,7 @@ function updateListDeleteModalControls() {
   const mode = modal?.querySelector('input[name="listDeleteMode"]:checked')?.value || 'delete';
 
   if (targets) targets.classList.toggle('is-disabled', mode !== 'move');
-  if (confirmButton) confirmButton.textContent = mode === 'clear-tabs' ? 'Delete tabs' : 'Delete list';
+  if (confirmButton) confirmButton.textContent = mode === 'clear-tabs' ? 'Archive tabs' : 'Delete list';
 }
 
 function closeListDeleteModal() {
@@ -1422,8 +1465,8 @@ async function confirmListDelete() {
     mode === 'move'
       ? 'List deleted, tabs moved'
       : mode === 'clear-tabs'
-        ? 'List kept, tabs deleted'
-        : 'List and tabs deleted'
+        ? 'List kept, tabs archived'
+        : 'List deleted, tabs archived'
   );
 }
 
@@ -1755,9 +1798,9 @@ document.addEventListener('click', async (e) => {
   }
 
   if (action === 'bulk-delete-deferred') {
-    const count = await bulkUpdateSavedTabs('delete');
+    const count = await bulkUpdateSavedTabs('archive');
     await renderDeferredColumn();
-    if (count > 0) showToast(`Deleted ${count} saved tab${count !== 1 ? 's' : ''}`);
+    if (count > 0) showToast(`Archived ${count} saved tab${count !== 1 ? 's' : ''}`);
     return;
   }
 
@@ -1799,6 +1842,22 @@ document.addEventListener('click', async (e) => {
     const count = await openSavedTabsByIds(ids);
     await renderDeferredColumn();
     if (count > 0) showToast(`Opened ${count} saved tab${count !== 1 ? 's' : ''}`);
+    return;
+  }
+
+  if (action === 'restore-archived-tab') {
+    const id = actionEl.dataset.deferredId;
+    const restored = await restoreArchivedSavedTab(id);
+    await renderDeferredColumn();
+    if (restored) showToast('Restored saved tab');
+    return;
+  }
+
+  if (action === 'delete-archived-tab') {
+    const id = actionEl.dataset.deferredId;
+    const deleted = await deleteArchivedSavedTab(id);
+    await renderDeferredColumn();
+    if (deleted) showToast('Deleted archived tab');
     return;
   }
 
@@ -1932,12 +1991,12 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // ---- Dismiss a saved tab (removes it entirely) ----
-  if (action === 'dismiss-deferred') {
+  // ---- Archive a saved tab ----
+  if (action === 'archive-deferred' || action === 'dismiss-deferred') {
     const id = actionEl.dataset.deferredId;
     if (!id) return;
 
-    await dismissSavedTab(id);
+    await archiveSavedTab(id);
 
     const item = actionEl.closest('.deferred-item');
     if (item) {
@@ -2140,14 +2199,14 @@ function moveDeferredItemInDom(draggedId, targetGroup, beforeTabId) {
 
 // ---- Saved-list and open-tab drag and drop ----
 document.addEventListener('dragstart', (e) => {
-  if (!e.target.closest('.deferred-item, .page-chip[data-tab-id]')) return;
+  if (!e.target.closest('.deferred-item, .archive-item, .page-chip[data-tab-id]')) return;
   e.preventDefault();
   clearOpenTabDragState();
   clearDeferredDragState();
 });
 
 document.addEventListener('dragend', (e) => {
-  const item = e.target.closest('.deferred-item');
+  const item = e.target.closest('.deferred-item, .archive-item');
   if (item) item.classList.remove('dragging');
   document.querySelectorAll('.deferred-list-group.drag-over').forEach(group => {
     group.classList.remove('drag-over');
@@ -2183,7 +2242,7 @@ document.addEventListener('drop', async (e) => {
   const moved = await reorderSavedTab(tabId, dropTarget.listId, dropTarget.beforeTabId);
   if (!moved) return;
 
-  moveDeferredItemInDom(tabId, dropTarget.group, dropTarget.beforeTabId);
+  await renderDeferredColumn();
   const listName = dropTarget.group.querySelector('.deferred-list-name')?.textContent || 'list';
   showToast(`Moved to ${listName}`);
 });
@@ -2203,12 +2262,13 @@ document.addEventListener('mousedown', (e) => {
     return;
   }
 
-  const item = e.target.closest('.deferred-item');
-  if (!item || e.target.closest('.deferred-checkbox, .deferred-dismiss, .deferred-edit-title')) return;
+  const item = e.target.closest('.deferred-item, .archive-item');
+  if (!item || e.target.closest('.deferred-checkbox, .deferred-dismiss, .deferred-edit-title, .archive-item-actions, button')) return;
 
   savedListMouseDrag = {
     id: item.dataset.deferredId,
     item,
+    source: item.classList.contains('archive-item') ? 'archive' : 'active',
     startX: e.clientX,
     startY: e.clientY,
     active: false,
@@ -2294,11 +2354,17 @@ document.addEventListener('mouseup', async (e) => {
   const dropTarget = getDeferredDropTarget(e.clientX, e.clientY);
   if (!dropTarget) return;
 
-  const moved = await reorderSavedTab(drag.id, dropTarget.listId, dropTarget.beforeTabId);
+  const moved = drag.source === 'archive'
+    ? await restoreArchivedSavedTab(drag.id, dropTarget.listId, dropTarget.beforeTabId)
+    : await reorderSavedTab(drag.id, dropTarget.listId, dropTarget.beforeTabId);
   if (!moved) return;
 
   const listName = dropTarget.group.querySelector('.deferred-list-name')?.textContent || 'list';
-  moveDeferredItemInDom(drag.id, dropTarget.group, dropTarget.beforeTabId);
+  if (drag.source === 'archive') {
+    await renderDeferredColumn();
+  } else {
+    moveDeferredItemInDom(drag.id, dropTarget.group, dropTarget.beforeTabId);
+  }
   showToast(`Moved to ${listName}`);
 });
 
@@ -2314,7 +2380,7 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  if (!suppressNextDeferredClick || !e.target.closest('.deferred-item')) return;
+  if (!suppressNextDeferredClick || !e.target.closest('.deferred-item, .archive-item')) return;
   e.preventDefault();
   e.stopPropagation();
 }, true);

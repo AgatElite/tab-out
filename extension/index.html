@@ -88,7 +88,6 @@
       <button class="action-btn primary" type="button" data-action="bulk-open-deferred">Open</button>
       <button class="action-btn" type="button" data-action="bulk-archive-deferred">Archive</button>
       <button class="action-btn" type="button" data-action="open-bulk-move-deferred">Move</button>
-      <button class="action-btn danger" type="button" data-action="bulk-delete-deferred">Delete</button>
       <button class="deferred-bulk-clear" type="button" data-action="clear-deferred-selection" title="Clear selection">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
       </button>
@@ -141,12 +140,12 @@
 
     <label class="list-delete-choice">
       <input type="radio" name="listDeleteMode" value="clear-tabs">
-      <span>Delete tabs, keep the list</span>
+      <span>Archive tabs, keep the list</span>
     </label>
 
     <label class="list-delete-choice">
       <input type="radio" name="listDeleteMode" value="delete">
-      <span>Delete the list and its tabs</span>
+      <span>Delete list, archive its tabs</span>
     </label>
 
     <div class="list-delete-actions">

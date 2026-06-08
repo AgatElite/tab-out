@@ -15,14 +15,24 @@ function cssBlock(css, selector) {
   return match ? match[1] : '';
 }
 
-test('delete-list modal offers clearing tabs before the destructive delete option', () => {
+test('delete-list modal archives tabs before the destructive list-delete option', () => {
   const html = readExtensionFile('index.html');
   const clearTabsIndex = html.indexOf('value="clear-tabs"');
   const deleteListIndex = html.indexOf('value="delete"');
 
   assert.notEqual(clearTabsIndex, -1);
   assert.ok(clearTabsIndex < deleteListIndex);
-  assert.match(html, /Delete tabs, keep the list/);
+  assert.match(html, /Archive tabs, keep the list/);
+  assert.match(html, /Delete list, archive its tabs/);
+  assert.doesNotMatch(html, /bulk-delete-deferred/);
+});
+
+test('archive rows expose restore and permanent delete controls', () => {
+  const app = readExtensionFile('app.js');
+
+  assert.match(app, /data-action="restore-archived-tab"/);
+  assert.match(app, /data-action="delete-archived-tab"/);
+  assert.match(app, /data-deferred-id="\$\{item\.id\}"/);
 });
 
 test('saved list cards visually distinguish Inbox and separate headers from tab rows', () => {
