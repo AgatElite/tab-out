@@ -1323,11 +1323,11 @@ function renderDeferredItem(item) {
   const checked = selectedDeferredIds.has(item.id) ? ' checked' : '';
 
   return `
-    <div class="deferred-item" data-deferred-id="${item.id}" draggable="true">
+    <div class="deferred-item" data-deferred-id="${item.id}">
       <input type="checkbox" class="deferred-checkbox" data-action="toggle-deferred-selection" data-deferred-id="${item.id}"${checked}>
       <div class="deferred-info">
-        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" data-action="open-deferred-tab" data-deferred-id="${item.id}" title="${(item.title || '').replace(/"/g, '&quot;')}">
-          <img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${item.title || item.url}
+        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" data-action="open-deferred-tab" data-deferred-id="${item.id}" draggable="false" title="${(item.title || '').replace(/"/g, '&quot;')}">
+          <img src="${faviconUrl}" alt="" draggable="false" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" onerror="this.style.display='none'">${item.title || item.url}
         </a>
         <div class="deferred-meta">
           <span>${domain}</span>
@@ -2122,15 +2122,10 @@ function moveDeferredItemInDom(draggedId, targetGroup, beforeTabId) {
 
 // ---- Saved-list and open-tab drag and drop ----
 document.addEventListener('dragstart', (e) => {
-  const item = e.target.closest('.deferred-item');
-  if (!item) return;
-
-  const id = item.dataset.deferredId;
-  if (!id) return;
-
-  item.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', id);
+  if (!e.target.closest('.deferred-item, .page-chip[data-tab-id]')) return;
+  e.preventDefault();
+  clearOpenTabDragState();
+  clearDeferredDragState();
 });
 
 document.addEventListener('dragend', (e) => {
