@@ -548,7 +548,7 @@ header {
 
 .page-chip.dragging {
   opacity: 0.45;
-  cursor: grabbing;
+  cursor: default;
 }
 
 .page-chip.drag-over {
@@ -557,7 +557,6 @@ header {
 
 body.is-dragging-open-tab,
 body.is-dragging-open-tab * {
-  cursor: grabbing !important;
   user-select: none;
 }
 
