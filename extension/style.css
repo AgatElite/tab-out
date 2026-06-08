@@ -548,7 +548,7 @@ header {
 
 .page-chip.dragging {
   opacity: 0.45;
-  cursor: default;
+  cursor: grabbing;
 }
 
 .page-chip.drag-over {
@@ -557,6 +557,7 @@ header {
 
 body.is-dragging-open-tab,
 body.is-dragging-open-tab * {
+  cursor: grabbing !important;
   user-select: none;
 }
 
@@ -1370,7 +1371,7 @@ header { animation: fadeUp 0.5s ease both; }
   padding: 10px 0;
   border-bottom: 1px solid rgba(154, 145, 138, 0.12);
   animation: fadeUp 0.3s ease both;
-  cursor: default;
+  cursor: pointer;
 }
 
 .deferred-item:last-child {
@@ -1379,11 +1380,12 @@ header { animation: fadeUp 0.5s ease both; }
 
 .deferred-item.dragging {
   opacity: 0.45;
-  cursor: default;
+  cursor: grabbing;
 }
 
 body.is-dragging-deferred,
 body.is-dragging-deferred * {
+  cursor: grabbing !important;
   user-select: none;
 }
 

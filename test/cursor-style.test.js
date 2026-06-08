@@ -13,22 +13,24 @@ function cssBlock(selector) {
   return match ? match[1] : '';
 }
 
-test('open tab drag styles do not use closed-hand cursor', () => {
+test('open tab rows use pointer normally and grabbing only while actively dragging', () => {
+  const openTab = cssBlock('.page-chip.clickable');
   const draggedChip = cssBlock('.page-chip.dragging');
   const draggingBody = cssBlock('body.is-dragging-open-tab,\nbody.is-dragging-open-tab *');
 
-  assert.doesNotMatch(draggedChip, /cursor:\s*grabbing\b/);
-  assert.doesNotMatch(draggingBody, /cursor:\s*grabbing\b/);
+  assert.match(openTab, /cursor:\s*pointer\b/);
+  assert.match(draggedChip, /cursor:\s*grabbing\b/);
+  assert.match(draggingBody, /cursor:\s*grabbing\b/);
 });
 
-test('saved tab drag styles do not use hand cursors', () => {
+test('saved tab rows use pointer normally and grabbing only while actively dragging', () => {
   const savedItem = cssBlock('.deferred-item');
   const draggedItem = cssBlock('.deferred-item.dragging');
   const draggingBody = cssBlock('body.is-dragging-deferred,\nbody.is-dragging-deferred *');
 
-  assert.doesNotMatch(savedItem, /cursor:\s*grab(?:bing)?\b/);
-  assert.doesNotMatch(draggedItem, /cursor:\s*grab(?:bing)?\b/);
-  assert.doesNotMatch(draggingBody, /cursor:\s*grab(?:bing)?\b/);
+  assert.match(savedItem, /cursor:\s*pointer\b/);
+  assert.match(draggedItem, /cursor:\s*grabbing\b/);
+  assert.match(draggingBody, /cursor:\s*grabbing\b/);
 });
 
 test('saved tab rows do not opt into native browser dragging', () => {
