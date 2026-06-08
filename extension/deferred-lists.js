@@ -103,7 +103,8 @@
     const normalizedLists = normalizeDeferredLists(lists);
     const knownListIds = new Set(normalizedLists.map(list => list.id));
     const canMove = mode === 'move' && targetListId && targetListId !== listId && knownListIds.has(targetListId);
-    const nextLists = lists.filter(list => list.id !== listId);
+    const shouldKeepList = mode === 'clear-tabs';
+    const nextLists = shouldKeepList ? lists : lists.filter(list => list.id !== listId);
     const nextDeferred = deferred.map(tab => {
       if (tab.listId !== listId) return tab;
       if (canMove) return { ...tab, listId: targetListId };

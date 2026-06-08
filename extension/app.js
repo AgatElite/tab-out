@@ -1238,6 +1238,7 @@ function renderDeferredListGroup(group) {
   const items = group.items || [];
   const safeListId = (list.id || '').replace(/"/g, '&quot;');
   const safeListName = (list.name || '').replace(/"/g, '&quot;');
+  const groupClass = `deferred-list-group${list.isDefault ? ' is-inbox' : ''}`;
   const emptyText = list.isDefault ? 'New saves land here.' : 'Drop saved links here.';
   const renameButton = list.isDefault ? '' : `
     <button class="deferred-list-edit" type="button" data-action="rename-deferred-list" data-list-id="${safeListId}" data-list-name="${safeListName}" title="Rename list">
@@ -1254,7 +1255,7 @@ function renderDeferredListGroup(group) {
     </button>`;
 
   return `
-    <div class="deferred-list-group" data-deferred-list-id="${safeListId}">
+    <div class="${groupClass}" data-deferred-list-id="${safeListId}">
       <div class="deferred-list-header">
         <span class="deferred-list-name">${list.name}</span>
         <span class="deferred-list-count">${items.length}</span>
@@ -1386,9 +1387,20 @@ async function openListDeleteModal(listId) {
     </label>
   `).join('');
   modal.querySelector('input[name="listDeleteMode"][value="move"]').checked = targetLists.length > 0;
-  modal.querySelector('input[name="listDeleteMode"][value="delete"]').checked = targetLists.length === 0;
-  targets.classList.toggle('is-disabled', targetLists.length === 0);
+  modal.querySelector('input[name="listDeleteMode"][value="clear-tabs"]').checked = targetLists.length === 0;
+  modal.querySelector('input[name="listDeleteMode"][value="delete"]').checked = false;
+  updateListDeleteModalControls();
   modal.style.display = 'flex';
+}
+
+function updateListDeleteModalControls() {
+  const modal = document.getElementById('listDeleteModal');
+  const targets = document.getElementById('listDeleteTargets');
+  const confirmButton = modal?.querySelector('[data-action="confirm-list-delete"]');
+  const mode = modal?.querySelector('input[name="listDeleteMode"]:checked')?.value || 'delete';
+
+  if (targets) targets.classList.toggle('is-disabled', mode !== 'move');
+  if (confirmButton) confirmButton.textContent = mode === 'clear-tabs' ? 'Delete tabs' : 'Delete list';
 }
 
 function closeListDeleteModal() {
@@ -1406,7 +1418,13 @@ async function confirmListDelete() {
   await deleteSavedList(pendingListDelete.listId, mode, targetListId);
   closeListDeleteModal();
   await renderDeferredColumn();
-  showToast(mode === 'move' ? 'List deleted, tabs moved' : 'List and tabs deleted');
+  showToast(
+    mode === 'move'
+      ? 'List deleted, tabs moved'
+      : mode === 'clear-tabs'
+        ? 'List kept, tabs deleted'
+        : 'List and tabs deleted'
+  );
 }
 
 async function openBulkMoveModal() {
@@ -2316,8 +2334,7 @@ document.addEventListener('click', (e) => {
 // ---- Archive search — filter archived items as user types ----
 document.addEventListener('input', async (e) => {
   if (e.target.name === 'listDeleteMode') {
-    const targets = document.getElementById('listDeleteTargets');
-    if (targets) targets.classList.toggle('is-disabled', e.target.value !== 'move');
+    updateListDeleteModalControls();
     return;
   }
 

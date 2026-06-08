@@ -1254,6 +1254,11 @@ header { animation: fadeUp 0.5s ease both; }
   transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
+.deferred-list-group.is-inbox {
+  border-color: rgba(90, 122, 98, 0.22);
+  background: rgba(90, 122, 98, 0.045);
+}
+
 .deferred-list-items {
   max-height: 340px;
   overflow-y: auto;
@@ -1262,6 +1267,11 @@ header { animation: fadeUp 0.5s ease both; }
 
 :root[data-theme="dark"] .deferred-list-group {
   background: rgba(29, 32, 29, 0.38);
+}
+
+:root[data-theme="dark"] .deferred-list-group.is-inbox {
+  border-color: rgba(132, 166, 140, 0.24);
+  background: rgba(132, 166, 140, 0.075);
 }
 
 .deferred-list-group.drag-over {
@@ -1274,7 +1284,21 @@ header { animation: fadeUp 0.5s ease both; }
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(154, 145, 138, 0.08);
+}
+
+:root[data-theme="dark"] .deferred-list-header {
+  border-bottom-color: rgba(240, 235, 227, 0.08);
+}
+
+.deferred-list-group.is-inbox .deferred-list-header {
+  border-bottom-color: rgba(90, 122, 98, 0.12);
+}
+
+.deferred-list-group.is-inbox .deferred-list-name {
+  color: var(--accent-sage);
 }
 
 .deferred-list-name {

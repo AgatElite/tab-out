@@ -108,6 +108,27 @@ test('deletes a list and its active saved tabs', () => {
   ]);
 });
 
+test('clears active saved tabs from a list without deleting the list', () => {
+  const deferred = [
+    { id: 'a', title: 'A', listId: 'list-work', completed: false },
+    { id: 'b', title: 'B', listId: 'list-work', completed: true },
+    { id: 'c', title: 'C', listId: 'list-reading', completed: false },
+  ];
+  const lists = [
+    { id: 'list-work', name: 'Work' },
+    { id: 'list-reading', name: 'Reading' },
+  ];
+
+  const result = deleteDeferredList({ deferred, lists, listId: 'list-work', mode: 'clear-tabs' });
+
+  assert.deepEqual(result.lists.map(list => list.id), ['list-work', 'list-reading']);
+  assert.deepEqual(result.deferred, [
+    { id: 'a', title: 'A', listId: 'list-work', completed: false, dismissed: true },
+    { id: 'b', title: 'B', listId: 'list-work', completed: true },
+    { id: 'c', title: 'C', listId: 'list-reading', completed: false },
+  ]);
+});
+
 test('deletes a list and moves its tabs to a selected list', () => {
   const deferred = [
     { id: 'a', title: 'A', listId: 'list-work', completed: false },
