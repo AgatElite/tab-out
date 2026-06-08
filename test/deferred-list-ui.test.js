@@ -35,6 +35,18 @@ test('archive rows expose restore and permanent delete controls', () => {
   assert.match(app, /data-deferred-id="\$\{item\.id\}"/);
 });
 
+test('saved tab favicons use the browser extension favicon endpoint', () => {
+  const app = readExtensionFile('app.js');
+  const manifest = readExtensionFile('manifest.json');
+  const permissions = JSON.parse(manifest).permissions;
+
+  assert.match(app, /function getFaviconUrl/);
+  assert.match(app, /chrome\.runtime\.getURL\(`\/_favicon\/\?pageUrl=/);
+  assert.doesNotMatch(app, /google\.com\/s2\/favicons/);
+  assert.match(app, /class="deferred-favicon"/);
+  assert.ok(permissions.includes('favicon'));
+});
+
 test('saved list cards visually distinguish Inbox and separate headers from tab rows', () => {
   const app = readExtensionFile('app.js');
   const css = readExtensionFile('style.css');
